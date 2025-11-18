@@ -1,0 +1,1638 @@
+================================================================================
+    EXPLICAÇÃO DO CÓDIGO - Sistema de Análise de Notas
+    Análise Completa: Backend + Frontend
+================================================================================
+
+ÍNDICE:
+1. Visão Geral do Sistema
+2. BACKEND - data_processor.py (Processamento de Dados)
+3. BACKEND - views.py (Interface Web)
+4. FRONTEND - HTML (Estrutura da Página)
+5. FRONTEND - JavaScript (Lógica e Interação)
+6. FRONTEND - Chart.js (Visualização de Gráficos)
+7. Fluxo Completo do Sistema
+
+================================================================================
+1. VISÃO GERAL DO SISTEMA
+================================================================================
+
+O sistema tem 3 camadas principais:
+
+┌────────────────────────────────────────────────────────────┐
+│                     NAVEGADOR (FRONTEND)                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │     HTML     │  │  JavaScript  │  │   Chart.js   │     │
+│  │  (Estrutura) │  │   (Lógica)   │  │  (Gráficos)  │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+└────────────────────────────────────────────────────────────┘
+                            │
+                            │ HTTP (JSON)
+                            ▼
+┌────────────────────────────────────────────────────────────┐
+│                    SERVIDOR DJANGO (BACKEND)                │
+│  ┌──────────────┐                 ┌──────────────┐         │
+│  │   views.py   │  ──────────►    │data_processor│         │
+│  │  (Rotas API) │                 │   (Pandas)   │         │
+│  └──────────────┘                 └──────────────┘         │
+└────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+                     ┌──────────────┐
+                     │  CSV (Dados) │
+                     └──────────────┘
+
+
+FLUXO SIMPLES:
+1. Usuário seleciona filtros no HTML
+2. JavaScript coleta os valores e envia via POST
+3. views.py recebe a requisição
+4. data_processor.py filtra e processa os dados
+5. views.py retorna JSON com resultados
+6. JavaScript recebe os dados
+7. Chart.js desenha o gráfico na tela
+
+
+================================================================================
+2. BACKEND - DATA_PROCESSOR.PY (Processamento de Dados)
+================================================================================
+
+Arquivo responsável por toda a lógica de manipulação de dados com Pandas.
+
+--------------------------------------------------------------------------------
+CLASSE: BigDataAnalytics
+--------------------------------------------------------------------------------
+
+FUNÇÃO: __init__()
+------------------
+Inicializa o processador e carrega os dados automaticamente.
+
+    def __init__(self):
+        self.csv_path = settings.CSV_DATA_PATH  # Pega caminho do CSV
+        self.df = None                          # DataFrame vazio
+        self._load_data()                       # Carrega tudo
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: _load_data()
+--------------------
+Carrega o CSV e prepara os dados para análise.
+
+ETAPA 1: Carregar CSV com Pandas
+---------------------------------
+    self.df = pd.read_csv(
+        self.csv_path,
+        dtype={
+            'id_nota': str,
+            'id_matricula': str,
+            'vlr_nota': float,
+            ...
+        }
+    )
+
+Por que definir dtype?
+- Garante que cada coluna tenha o tipo correto
+- IDs são texto (str), não números
+- Notas são decimais (float)
+- Evita que Pandas "adivinhe" errado
+
+
+ETAPA 2: Limpeza de Dados
+--------------------------
+    self.df['titulo_turma'] = self.df['titulo_turma'].str.strip()
+    self.df['nome_serie'] = self.df['nome_serie'].str.strip()
+    self.df['nome_disciplina'] = self.df['nome_disciplina'].str.strip()
+
+O que faz .str.strip():
+- Remove espaços no início e fim
+- "  Turma A  " → "Turma A"
+- Evita problemas em filtros e agrupamentos
+
+
+ETAPA 3: Criar Coluna Combinada
+--------------------------------
+    self.df['serie_turma'] = self.df['nome_serie'] + ' - ' + self.df['titulo_turma']
+
+Junta duas colunas:
+- "3º Ano" + " - " + "A" = "3º Ano - A"
+- Facilita exibir no dropdown
+
+
+ETAPA 4: Calcular Status dos Alunos
+------------------------------------
+    self._calculate_student_status()
+
+Chama função que determina se cada aluno está aprovado, em recuperação ou 
+reprovado.
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: _calculate_student_status()
+------------------------------------
+Esta é a função MAIS IMPORTANTE do sistema!
+
+Calcula o status final de cada aluno baseado em suas notas.
+
+CONTEXTO:
+---------
+Cada aluno tem 5 registros no CSV:
+- Mb1 (nota do bimestre 1)
+- Mb2 (nota do bimestre 2)
+- Mb3 (nota do bimestre 3)
+- Mb4 (nota do bimestre 4)
+- MA  (média anual)
+
+REGRAS DE NEGÓCIO:
+------------------
+1. REPROVADO: Se nota MA < 6
+2. RECUPERAÇÃO: Se MA >= 6, mas alguma Mb1-4 < 6
+3. APROVADO: Se todas as notas >= 6
+
+
+COMO FUNCIONA O CÓDIGO:
+
+Passo 1: Criar lista para armazenar resultados
+-----------------------------------------------
+    alunos_status = []
+
+
+Passo 2: Agrupar registros por aluno
+-------------------------------------
+    for id_matricula, grupo_aluno in self.df.groupby('id_matricula'):
+
+O que faz groupby:
+- Separa o DataFrame em grupos
+- Cada grupo contém todas as 5 notas de um aluno
+- Loop processa um aluno por vez
+
+
+Passo 3: Pegar a nota MA do aluno
+----------------------------------
+    nota_ma = grupo_aluno[grupo_aluno['tipo_nota_aval'] == 'MA']['vlr_nota']
+
+Explicação:
+- grupo_aluno[grupo_aluno['tipo_nota_aval'] == 'MA']
+  → Filtra apenas a linha onde tipo é 'MA'
+  
+- ['vlr_nota']
+  → Pega o valor da nota
+
+
+Passo 4: Verificar se tem nota MA
+----------------------------------
+    if len(nota_ma) > 0:
+        nota_ma_valor = nota_ma.iloc[0]
+
+.iloc[0] pega o primeiro (e único) valor
+
+
+Passo 5: Aplicar regra de reprovação
+-------------------------------------
+    if nota_ma_valor < 6:
+        status = 'Reprovado'
+
+Se MA < 6, está reprovado (não precisa verificar mais nada)
+
+
+Passo 6: Se não reprovado, verificar recuperação
+-------------------------------------------------
+    else:
+        notas_bimestrais = grupo_aluno[
+            grupo_aluno['tipo_nota_aval'].isin(['Mb1', 'Mb2', 'Mb3', 'Mb4'])
+        ]['vlr_nota']
+
+.isin(['Mb1', 'Mb2', 'Mb3', 'Mb4']):
+- Filtra apenas notas bimestrais
+- Exclui a nota MA
+
+Verificar se alguma é menor que 6:
+    if len(notas_bimestrais) > 0 and (notas_bimestrais < 6).any():
+        status = 'Recuperação'
+
+.any() retorna True se PELO MENOS UMA nota é menor que 6
+
+
+Passo 7: Se passou em tudo
+---------------------------
+    else:
+        status = 'Aprovado'
+
+
+Passo 8: Salvar resultado
+--------------------------
+    alunos_status.append({
+        'id_matricula': id_matricula,
+        'status_aluno': status
+    })
+
+Adiciona à lista um dicionário com ID e status do aluno
+
+
+Passo 9: Criar DataFrame de status
+-----------------------------------
+    df_status = pd.DataFrame(alunos_status)
+
+Converte lista de dicionários em DataFrame
+
+
+Passo 10: Juntar com DataFrame principal
+-----------------------------------------
+    self.df = self.df.merge(df_status, on='id_matricula', how='left')
+
+Merge = JOIN do SQL
+- on='id_matricula': coluna de ligação
+- how='left': mantém todos os registros do df principal
+
+Resultado: Cada registro agora tem coluna 'status_aluno'
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: get_unique_values()
+---------------------------
+Extrai valores únicos para popular os filtros (dropdowns).
+
+    return {
+        'filiais': sorted(df['id_filial'].unique().tolist()),
+        'series_turmas': sorted(df['serie_turma'].unique().tolist()),
+        'disciplinas': sorted(df['nome_disciplina'].unique().tolist()),
+        'tipos_nota': sorted(df['tipo_nota_aval'].unique().tolist())
+    }
+
+Passo a passo:
+1. df['id_filial'].unique()  → Array com valores únicos (sem repetir)
+2. .tolist()                 → Converte para lista Python
+3. sorted()                  → Ordena alfabeticamente
+4. Retorna dicionário
+
+Exemplo de retorno:
+    {
+        'filiais': ['E001', 'E002', 'E003'],
+        'disciplinas': ['História', 'Matemática', 'Português'],
+        ...
+    }
+
+Uso: JavaScript usa esses valores para popular os dropdowns
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: filter_data(filters)
+----------------------------
+Aplica filtros selecionados pelo usuário.
+
+Recebe:
+    filters = {
+        'id_filial': 'E001',
+        'nome_disciplina': 'Matemática',
+        'status': 'Aprovado'
+    }
+
+Código:
+    df_filtered = self.df.copy()
+    
+    if filters.get('id_filial'):
+        df_filtered = df_filtered[df_filtered['id_filial'] == filters['id_filial']]
+    
+    if filters.get('serie_turma'):
+        df_filtered = df_filtered[df_filtered['serie_turma'] == filters['serie_turma']]
+    
+    # ... e assim por diante
+
+Como funciona a filtragem:
+    df_filtered[df_filtered['id_filial'] == 'E001']
+    
+    1. df_filtered['id_filial'] == 'E001'
+       → Cria array booleano: [True, True, False, True, False, ...]
+    
+    2. df_filtered[array_booleano]
+       → Retorna apenas linhas onde é True
+
+Filtros são CUMULATIVOS (AND lógico):
+- Cada filtro reduz ainda mais o dataset
+- Filial E001 AND Disciplina Matemática AND Status Aprovado
+
+Retorna: DataFrame filtrado
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: aggregate_data(df_filtered, chart_type)
+-----------------------------------------------
+Agrupa e resume dados para gerar gráficos.
+
+Tem 5 tipos de gráficos:
+
+═══════════════════════════════════════════════════════════════════════════════
+TIPO 1: COMPARAÇÃO ENTRE ESCOLAS (comparacao_filiais)
+═══════════════════════════════════════════════════════════════════════════════
+
+Mostra quantos alunos por escola estão aprovados/recuperação/reprovados.
+
+Código:
+    # Pegar um registro por aluno
+    df_alunos = df_filtered.groupby('id_matricula').first().reset_index()
+    
+    # Contar por filial e status
+    result = df_alunos.groupby(['id_filial', 'status']).size().unstack(fill_value=0)
+
+.first(): Pega primeira ocorrência de cada aluno (evita duplicatas)
+.unstack(): Transforma em matriz (tabela cruzada)
+
+Resultado:
+             Aprovado  Recuperação  Reprovado
+id_filial                                     
+E001              120           25         15
+E002              135           20         10
+
+Preparar para gráfico:
+    labels = ['Escola E001', 'Escola E002', ...]
+    data_aprovados = [120, 135, ...]
+    data_recuperacao = [25, 20, ...]
+    data_reprovados = [15, 10, ...]
+
+Retorna:
+    {
+        'labels': labels,
+        'datasets': [
+            {'label': 'Reprovados', 'data': data_reprovados, 'color': 'vermelho'},
+            {'label': 'Recuperação', 'data': data_recuperacao, 'color': 'amarelo'},
+            {'label': 'Aprovados', 'data': data_aprovados, 'color': 'verde'}
+        ],
+        'title': 'Comparação entre Escolas',
+        'type': 'grouped'  # Indica que é gráfico com múltiplas barras
+    }
+
+
+═══════════════════════════════════════════════════════════════════════════════
+TIPO 2: MÉDIA POR DISCIPLINA (media_por_disciplina)
+═══════════════════════════════════════════════════════════════════════════════
+
+Calcula média de notas de cada disciplina.
+
+Código:
+    result = df_filtered.groupby('nome_disciplina')['vlr_nota'].mean().sort_values(ascending=False)
+
+O que faz:
+- groupby('nome_disciplina'): Agrupa por disciplina
+- ['vlr_nota'].mean(): Calcula média das notas em cada grupo
+- sort_values(ascending=False): Ordena do maior para o menor
+
+Resultado:
+    nome_disciplina
+    Português      8.5
+    História       8.2
+    Matemática     7.8
+
+Retorna:
+    {
+        'labels': ['Português', 'História', 'Matemática'],
+        'data': [8.5, 8.2, 7.8],
+        'title': 'Média de Notas por Disciplina'
+    }
+
+
+═══════════════════════════════════════════════════════════════════════════════
+TIPO 3: STATUS DOS ALUNOS (status_alunos)
+═══════════════════════════════════════════════════════════════════════════════
+
+Conta quantos alunos em cada status.
+
+⚠️ ATENÇÃO: Precisa contar ALUNOS ÚNICOS, não registros!
+
+Código:
+    alunos_por_status = df_filtered.groupby('id_matricula')['status'].first()
+    result = alunos_por_status.value_counts()
+
+Por que .first()?
+- Cada aluno aparece 5 vezes (5 notas diferentes)
+- .first() pega o status da primeira ocorrência
+- Garante que cada aluno é contado UMA VEZ APENAS
+
+Resultado:
+    Aprovado       150
+    Recuperação     30
+    Reprovado       20
+
+Retorna:
+    {
+        'labels': ['Aprovado', 'Recuperação', 'Reprovado'],
+        'data': [150, 30, 20],
+        'title': 'Status dos Alunos (Quantidade de Alunos Únicos)'
+    }
+
+
+═══════════════════════════════════════════════════════════════════════════════
+TIPO 4: NOTAS POR TIPO DE AVALIAÇÃO (notas_por_tipo)
+═══════════════════════════════════════════════════════════════════════════════
+
+Média de notas em cada tipo (Mb1, Mb2, Mb3, Mb4, MA).
+
+Código:
+    result = df_filtered.groupby('tipo_nota_aval')['vlr_nota'].mean().sort_index()
+
+Resultado:
+    MA     7.8
+    Mb1    7.2
+    Mb2    7.5
+    Mb3    7.4
+    Mb4    7.6
+
+Retorna:
+    {
+        'labels': ['MA', 'Mb1', 'Mb2', 'Mb3', 'Mb4'],
+        'data': [7.8, 7.2, 7.5, 7.4, 7.6],
+        'title': 'Média de Notas por Tipo de Avaliação'
+    }
+
+
+═══════════════════════════════════════════════════════════════════════════════
+TIPO 5: ALUNOS POR FAIXA DE DESEMPENHO (alunos_por_faixa)
+═══════════════════════════════════════════════════════════════════════════════
+
+Divide notas em faixas e conta alunos.
+
+Código:
+    bins = [0, 4, 6, 8, 10]
+    labels_bins = ['Crítico (0-4)', 'Recuperação (4-6)', 'Bom (6-8)', 'Excelente (8-10)']
+    df_filtered['faixa_nota'] = pd.cut(df_filtered['vlr_nota'], bins=bins, labels=labels_bins)
+
+O que faz pd.cut():
+- Transforma valores contínuos em categorias
+- Nota 3.5 → 'Crítico (0-4)'
+- Nota 7.2 → 'Bom (6-8)'
+- Nota 9.0 → 'Excelente (8-10)'
+
+Contar alunos únicos por faixa:
+    result = df_filtered.groupby('faixa_nota')['id_matricula'].nunique()
+
+.nunique(): Conta IDs únicos (não conta duplicatas)
+
+Resultado:
+    Crítico (0-4)          40
+    Recuperação (4-6)      80
+    Bom (6-8)             180
+    Excelente (8-10)      150
+
+Retorna:
+    {
+        'labels': ['Crítico (0-4)', 'Recuperação (4-6)', 'Bom (6-8)', 'Excelente (8-10)'],
+        'data': [40, 80, 180, 150],
+        'title': 'Quantidade de Alunos por Faixa de Desempenho'
+    }
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: get_statistics(df_filtered)
+-----------------------------------
+Calcula estatísticas gerais dos dados filtrados.
+
+Código:
+    # Contar alunos únicos por status
+    alunos_por_status = df_filtered.groupby('id_matricula')['status'].first()
+    status_counts = alunos_por_status.value_counts().to_dict()
+    
+    return {
+        'total_registros': len(df_filtered),
+        'media_geral': round(df_filtered['vlr_nota'].mean(), 2),
+        'nota_maxima': round(df_filtered['vlr_nota'].max(), 2),
+        'nota_minima': round(df_filtered['vlr_nota'].min(), 2),
+        'total_alunos': df_filtered['id_matricula'].nunique(),
+        'aprovados': status_counts.get('Aprovado', 0),
+        'recuperacao': status_counts.get('Recuperação', 0),
+        'reprovados': status_counts.get('Reprovado', 0)
+    }
+
+Operações Pandas:
+- len(df): Conta linhas
+- .mean(): Média
+- .max(): Valor máximo
+- .min(): Valor mínimo
+- .nunique(): Conta valores únicos
+
+
+================================================================================
+3. BACKEND - VIEWS.PY (Interface Web)
+================================================================================
+
+Gerencia a comunicação entre navegador e processador de dados.
+
+--------------------------------------------------------------------------------
+VARIÁVEL GLOBAL: analytics_engine
+----------------------------------
+    analytics_engine = BigDataAnalytics()
+
+- Cria UMA INSTÂNCIA quando o servidor inicia
+- Carrega dados uma vez
+- Reutiliza para todas as requisições
+- Mais eficiente que carregar dados toda vez
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: dashboard(request)
+--------------------------
+Renderiza a página principal do dashboard.
+
+Fluxo:
+1. Usuário acessa http://localhost:8000
+2. Django chama essa função
+3. Função pega valores únicos (filiais, disciplinas, etc)
+4. Renderiza template HTML com esses dados
+
+Código:
+    def dashboard(request):
+        unique_values = analytics_engine.get_unique_values()
+        
+        context = {
+            'filiais': unique_values['filiais'],
+            'series_turmas': unique_values['series_turmas'],
+            'disciplinas': unique_values['disciplinas'],
+            'tipos_nota': unique_values['tipos_nota'],
+            'status_options': ['Aprovado', 'Recuperação', 'Reprovado']
+        }
+        
+        return render(request, 'analytics/dashboard.html', context)
+
+context: Dicionário que o template HTML pode acessar
+render(): Processa o HTML e retorna para o navegador
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: get_chart_data(request)
+-------------------------------
+API que retorna dados do gráfico (JSON).
+
+Tipo: POST
+URL: /api/chart-data/
+
+Passo 1: Receber dados do JavaScript
+-------------------------------------
+    data = json.loads(request.body)
+    filters = {
+        'id_filial': data.get('id_filial', ''),
+        'serie_turma': data.get('serie_turma', ''),
+        'nome_disciplina': data.get('nome_disciplina', ''),
+        'tipo_nota_aval': data.get('tipo_nota_aval', ''),
+        'status': data.get('status', '')
+    }
+
+json.loads(): Converte JSON em dicionário Python
+data.get('chave', ''): Pega valor, ou '' se não existir
+
+
+Passo 2: Remover filtros vazios
+--------------------------------
+    filters = {k: v for k, v in filters.items() if v}
+
+Compreensão de dicionário:
+- Percorre cada par chave-valor
+- Mantém apenas se valor não é vazio ('')
+
+
+Passo 3: Filtrar dados
+-----------------------
+    df_filtered = analytics_engine.filter_data(filters)
+
+
+Passo 4: Agregar para gráfico
+------------------------------
+    chart_type = data.get('chart_type', 'distribuicao_notas')
+    chart_data = analytics_engine.aggregate_data(df_filtered, chart_type)
+
+
+Passo 5: Calcular estatísticas
+-------------------------------
+    statistics = analytics_engine.get_statistics(df_filtered)
+
+
+Passo 6: Retornar JSON
+-----------------------
+    return JsonResponse({
+        'success': True,
+        'chart_data': chart_data,
+        'statistics': statistics
+    })
+
+JsonResponse: Converte dicionário Python em JSON
+
+
+Tratamento de erros:
+    try:
+        # ... todo o código acima ...
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': str(e)
+        }, status=400)
+
+Se algo der errado, retorna erro ao invés de quebrar
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: generate_report(request)
+--------------------------------
+Gera dados estruturados para relatório.
+
+Similar a get_chart_data(), mas organiza em formato de relatório:
+    report = {
+        'titulo': 'Relatório de Análise de Notas',
+        'filtros_aplicados': filters,
+        'grafico': chart_data,
+        'estatisticas': statistics
+    }
+
+
+================================================================================
+4. FRONTEND - HTML (Estrutura da Página)
+================================================================================
+
+Arquivo: analytics/templates/analytics/dashboard.html
+
+O HTML define a estrutura visual da página.
+
+--------------------------------------------------------------------------------
+SEÇÃO 1: FILTROS
+----------------
+
+<div class="filters-section">
+    <h2>🔍 Filtros de Análise</h2>
+    
+    <select id="id_filial">
+        <option value="">Todas as Escolas</option>
+        {% for filial in filiais %}
+        <option value="{{ filial }}">Escola {{ filial }}</option>
+        {% endfor %}
+    </select>
+    
+    <!-- Mais filtros... -->
+</div>
+
+{% for filial in filiais %}:
+- Template Django que percorre lista de filiais
+- Para cada filial, cria uma <option>
+
+Resultado no navegador:
+    <option value="E001">Escola E001</option>
+    <option value="E002">Escola E002</option>
+    <option value="E003">Escola E003</option>
+
+id="id_filial":
+- JavaScript usa esse ID para pegar o valor selecionado
+
+
+--------------------------------------------------------------------------------
+SEÇÃO 2: TIPOS DE GRÁFICO
+--------------------------
+
+<div class="chart-type-section">
+    <input type="radio" id="chart_comparacao_filiais" 
+           name="chart_type" value="comparacao_filiais" checked>
+    <label for="chart_comparacao_filiais">Comparação entre Escolas</label>
+    
+    <input type="radio" id="chart_media_disciplina" 
+           name="chart_type" value="media_por_disciplina">
+    <label for="chart_media_disciplina">Média por Disciplina</label>
+    
+    <!-- Mais opções... -->
+</div>
+
+type="radio": Permite selecionar apenas uma opção
+name="chart_type": Agrupa os radio buttons
+value="comparacao_filiais": Valor enviado ao servidor
+checked: Opção selecionada por padrão
+
+
+--------------------------------------------------------------------------------
+SEÇÃO 3: BOTÕES
+---------------
+
+<button class="btn btn-primary" onclick="loadChartData()">
+    🔄 Atualizar Gráfico
+</button>
+
+<button class="btn btn-secondary" onclick="printReport()">
+    🖨️ Imprimir Relatório
+</button>
+
+<button class="btn btn-tertiary" onclick="clearFilters()">
+    🗑️ Limpar Filtros
+</button>
+
+onclick="loadChartData()":
+- Quando usuário clica, chama função JavaScript loadChartData()
+
+
+--------------------------------------------------------------------------------
+SEÇÃO 4: ESTATÍSTICAS
+----------------------
+
+<div id="statistics" class="statistics-section" style="display: none;">
+    <!-- JavaScript preenche aqui dinamicamente -->
+</div>
+
+display: none: Inicialmente oculto
+JavaScript preenche quando recebe dados
+
+
+--------------------------------------------------------------------------------
+SEÇÃO 5: GRÁFICO
+----------------
+
+<div class="chart-section">
+    <h2 id="chartTitle">Selecione os filtros e clique em "Atualizar Gráfico"</h2>
+    <canvas id="chartCanvas"></canvas>
+</div>
+
+<canvas>: Elemento HTML onde Chart.js desenha o gráfico
+id="chartCanvas": JavaScript usa esse ID para desenhar
+
+
+================================================================================
+5. FRONTEND - JAVASCRIPT (Lógica e Interação)
+================================================================================
+
+Todo o código JavaScript está dentro de <script> no dashboard.html.
+
+--------------------------------------------------------------------------------
+VARIÁVEIS GLOBAIS
+-----------------
+
+let currentChart = null;         // Referência ao gráfico atual
+let currentChartData = null;     // Dados do gráfico
+let currentStatistics = null;    // Estatísticas atuais
+let currentFilters = null;       // Filtros aplicados
+
+Globais porque precisam ser acessadas por várias funções.
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: getCookie(name)
+-----------------------
+Pega o CSRF token dos cookies.
+
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+O que faz:
+1. Pega todos os cookies do navegador
+2. Divide por ';' (cookies são separados assim)
+3. Procura o cookie com o nome específico
+4. Retorna o valor do cookie
+
+Por que CSRF token?
+- Django exige para requisições POST
+- Segurança contra ataques CSRF
+- Token é gerado automaticamente pelo Django
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: loadChartData() ⭐ (FUNÇÃO PRINCIPAL)
+--------------------------------------------
+Esta é a função mais importante do frontend!
+
+É chamada quando usuário clica em "Atualizar Gráfico".
+
+
+Passo 1: Coletar valores dos filtros
+-------------------------------------
+    const filters = {
+        id_filial: document.getElementById('id_filial').value,
+        serie_turma: document.getElementById('serie_turma').value,
+        nome_disciplina: document.getElementById('nome_disciplina').value,
+        tipo_nota_aval: document.getElementById('tipo_nota_aval').value,
+        status: document.getElementById('status').value,
+        chart_type: document.querySelector('input[name="chart_type"]:checked').value
+    };
+
+document.getElementById('id_filial').value:
+- Pega o elemento HTML com id="id_filial"
+- .value retorna o valor selecionado no dropdown
+
+document.querySelector('input[name="chart_type"]:checked'):
+- Pega o radio button selecionado (checked)
+- .value retorna o valor (ex: 'media_por_disciplina')
+
+
+Passo 2: Armazenar filtros
+---------------------------
+    currentFilters = filters;
+
+Salva para usar depois (ex: na impressão do relatório)
+
+
+Passo 3: Mostrar mensagem de loading
+-------------------------------------
+    document.getElementById('chartTitle').textContent = 'Carregando dados...';
+
+
+Passo 4: Fazer requisição ao servidor
+--------------------------------------
+    const response = await fetch('/api/chart-data/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrftoken
+        },
+        body: JSON.stringify(filters)
+    });
+
+fetch(): Faz requisição HTTP assíncrona
+- URL: '/api/chart-data/'
+- method: 'POST'
+- headers: Cabeçalhos da requisição
+  - 'Content-Type': Informa que está enviando JSON
+  - 'X-CSRFToken': Token de segurança do Django
+- body: Dados enviados (filtros convertidos para JSON)
+
+await: Espera a resposta do servidor
+JSON.stringify(): Converte objeto JavaScript para string JSON
+
+
+Passo 5: Processar resposta
+----------------------------
+    const data = await response.json();
+
+response.json(): Converte resposta JSON em objeto JavaScript
+
+
+Passo 6: Verificar sucesso e atualizar página
+----------------------------------------------
+    if (data.success) {
+        currentChartData = data.chart_data;
+        currentStatistics = data.statistics;
+        
+        updateStatistics(data.statistics);
+        updateChart(data.chart_data);
+    } else {
+        alert('Erro ao carregar dados: ' + data.error);
+    }
+
+Se sucesso:
+- Salva dados em variáveis globais
+- Chama função para atualizar estatísticas
+- Chama função para atualizar gráfico
+
+Se erro:
+- Mostra mensagem de erro ao usuário
+
+
+Passo 7: Tratar erros de conexão
+---------------------------------
+    try {
+        // ... todo código acima ...
+    } catch (error) {
+        console.error('Erro:', error);
+        alert('Erro ao conectar com o servidor');
+    }
+
+catch: Captura erros (ex: servidor fora do ar)
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: updateStatistics(stats)
+-------------------------------
+Atualiza as estatísticas na tela.
+
+    function updateStatistics(stats) {
+        const statsSection = document.getElementById('statistics');
+        statsSection.style.display = 'grid';
+        
+        statsSection.innerHTML = `
+            <div class="stat-card">
+                <h3>Total de Registros</h3>
+                <p>${stats.total_registros.toLocaleString('pt-BR')}</p>
+            </div>
+            <div class="stat-card">
+                <h3>Total de Alunos</h3>
+                <p>${stats.total_alunos.toLocaleString('pt-BR')}</p>
+            </div>
+            ...
+        `;
+    }
+
+O que faz:
+1. Pega elemento HTML com id="statistics"
+2. Torna visível (display: 'grid')
+3. innerHTML = ...: Substitui conteúdo interno
+4. Template string (`...`): Cria HTML dinâmico
+5. ${stats.total_registros}: Insere valor no HTML
+
+.toLocaleString('pt-BR'):
+- Formata número no padrão brasileiro
+- 50000 → "50.000"
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: updateChart(chartData) ⭐
+--------------------------------
+Atualiza o gráfico na tela usando Chart.js.
+
+
+Passo 1: Pegar contexto do canvas
+----------------------------------
+    const ctx = document.getElementById('chartCanvas').getContext('2d');
+
+getContext('2d'): Prepara canvas para desenho 2D
+
+
+Passo 2: Destruir gráfico anterior
+-----------------------------------
+    if (currentChart) {
+        currentChart.destroy();
+    }
+
+Se já existe gráfico, remove antes de criar novo
+
+
+Passo 3: Atualizar título
+--------------------------
+    document.getElementById('chartTitle').textContent = chartData.title;
+
+
+Passo 4: Determinar tipo de gráfico
+------------------------------------
+    const chartType = document.querySelector('input[name="chart_type"]:checked').value;
+    let chartTypeDisplay = 'bar';  // Padrão: barras
+    
+    if (chartType === 'status_alunos' || chartType === 'alunos_por_faixa') {
+        chartTypeDisplay = 'pie';  // Pizza para esses tipos
+    }
+
+Chart.js suporta:
+- 'bar': Gráfico de barras
+- 'pie': Gráfico de pizza
+- 'line': Gráfico de linha
+- etc.
+
+
+Passo 5: Preparar datasets
+---------------------------
+
+CASO 1: Gráfico agrupado (múltiplas barras)
+    if (chartData.type === 'grouped' && chartData.datasets) {
+        datasets = chartData.datasets.map(ds => ({
+            label: ds.label,
+            data: ds.data,
+            backgroundColor: ds.color,
+            borderColor: ds.color.replace('0.7', '1'),
+            borderWidth: 2
+        }));
+    }
+
+.map(): Transforma cada item da lista
+Cada dataset vira um objeto com configurações Chart.js
+
+Exemplo:
+    chartData.datasets = [
+        {label: 'Aprovados', data: [120, 135], color: 'rgba(40, 167, 69, 0.7)'},
+        {label: 'Reprovados', data: [15, 10], color: 'rgba(220, 53, 69, 0.7)'}
+    ]
+    
+    Vira:
+    datasets = [
+        {
+            label: 'Aprovados',
+            data: [120, 135],
+            backgroundColor: 'rgba(40, 167, 69, 0.7)',
+            borderColor: 'rgba(40, 167, 69, 1)',
+            borderWidth: 2
+        },
+        {
+            label: 'Reprovados',
+            data: [15, 10],
+            backgroundColor: 'rgba(220, 53, 69, 0.7)',
+            borderColor: 'rgba(220, 53, 69, 1)',
+            borderWidth: 2
+        }
+    ]
+
+
+CASO 2: Gráfico simples (uma série)
+    datasets = [{
+        label: chartData.title,
+        data: chartData.data,
+        backgroundColor: [
+            'rgba(102, 126, 234, 0.7)',
+            'rgba(118, 75, 162, 0.7)',
+            'rgba(40, 167, 69, 0.7)',
+            ...
+        ],
+        borderColor: [
+            'rgba(102, 126, 234, 1)',
+            'rgba(118, 75, 162, 1)',
+            'rgba(40, 167, 69, 1)',
+            ...
+        ],
+        borderWidth: 2
+    }];
+
+Array de cores: Uma cor para cada barra/fatia
+
+
+Passo 6: Criar gráfico com Chart.js
+------------------------------------
+    currentChart = new Chart(ctx, {
+        type: chartTypeDisplay,
+        data: {
+            labels: chartData.labels,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                legend: {
+                    display: chartTypeDisplay === 'pie' || (chartData.type === 'grouped'),
+                    position: 'bottom'
+                },
+                tooltip: {
+                    enabled: true,
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    padding: 12
+                }
+            },
+            scales: chartTypeDisplay === 'bar' ? {
+                y: {
+                    beginAtZero: true
+                }
+            } : {}
+        }
+    });
+
+new Chart(): Cria novo gráfico
+- ctx: Onde desenhar (canvas)
+- type: Tipo do gráfico ('bar', 'pie', etc)
+- data: Dados e labels
+- options: Configurações visuais
+
+Opções importantes:
+- responsive: true → Ajusta ao tamanho da tela
+- legend.display → Mostra legenda apenas quando necessário
+- legend.position: 'bottom' → Legenda embaixo
+- tooltip.enabled → Mostra valores ao passar mouse
+- scales.y.beginAtZero → Eixo Y começa no zero
+
+Chart.js automaticamente:
+- Desenha o gráfico
+- Anima a entrada
+- Adiciona interatividade (hover, tooltips)
+- Responsividade
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: printReport()
+---------------------
+Gera e imprime relatório em nova janela.
+
+
+Passo 1: Validar se tem dados
+------------------------------
+    if (!currentChartData || !currentStatistics) {
+        alert('Por favor, gere um gráfico primeiro antes de imprimir!');
+        return;
+    }
+
+
+Passo 2: Criar HTML do relatório
+---------------------------------
+    let reportContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Relatório de Análise de Notas</title>
+            <style>
+                /* CSS inline para impressão */
+                body { font-family: Arial; padding: 40px; }
+                h1 { color: #667eea; }
+                ...
+            </style>
+        </head>
+        <body>
+            <h1>📊 Relatório de Análise de Notas</h1>
+            
+            <h2>Filtros Aplicados</h2>
+            <div>Escola: ${currentFilters.id_filial || 'Todas'}</div>
+            ...
+            
+            <h2>Estatísticas Gerais</h2>
+            <div>Total: ${currentStatistics.total_alunos}</div>
+            ...
+            
+            <h2>${currentChartData.title}</h2>
+            <table>
+                <thead>
+                    <tr><th>Item</th><th>Valor</th></tr>
+                </thead>
+                <tbody>
+    `;
+
+Template string com HTML completo
+
+
+Passo 3: Adicionar dados do gráfico na tabela
+----------------------------------------------
+    for (let i = 0; i < currentChartData.labels.length; i++) {
+        reportContent += `
+            <tr>
+                <td>${currentChartData.labels[i]}</td>
+                <td>${currentChartData.data[i]}</td>
+            </tr>
+        `;
+    }
+
+Loop que cria uma linha <tr> para cada item
+
+
+Passo 4: Fechar HTML
+--------------------
+    reportContent += `
+                </tbody>
+            </table>
+        </body>
+        </html>
+    `;
+
+
+Passo 5: Abrir nova janela
+---------------------------
+    const printWindow = window.open('', '', 'width=900,height=700');
+
+window.open(): Abre nova janela do navegador
+
+
+Passo 6: Escrever HTML na janela
+---------------------------------
+    printWindow.document.write(reportContent);
+    printWindow.document.close();
+    printWindow.focus();
+
+
+Passo 7: Imprimir
+-----------------
+    setTimeout(() => {
+        printWindow.print();
+    }, 250);
+
+setTimeout: Aguarda 250ms para HTML carregar
+printWindow.print(): Abre diálogo de impressão
+
+
+--------------------------------------------------------------------------------
+FUNÇÃO: clearFilters()
+----------------------
+Limpa todos os filtros e reseta a página.
+
+    function clearFilters() {
+        document.getElementById('id_filial').value = '';
+        document.getElementById('serie_turma').value = '';
+        ...
+        
+        document.getElementById('statistics').style.display = 'none';
+        
+        if (currentChart) {
+            currentChart.destroy();
+            currentChart = null;
+        }
+    }
+
+O que faz:
+1. Define todos os selects para '' (opção padrão)
+2. Marca primeiro radio button
+3. Oculta estatísticas
+4. Destrói gráfico
+5. Limpa variáveis globais
+
+
+--------------------------------------------------------------------------------
+EVENTO: window.addEventListener('load')
+---------------------------------------
+Executa quando página carrega completamente.
+
+    window.addEventListener('load', function() {
+        loadChartData();
+    });
+
+Automaticamente carrega dados iniciais (sem filtros) quando abre a página.
+
+
+================================================================================
+6. FRONTEND - CHART.JS (Visualização de Gráficos)
+================================================================================
+
+Chart.js é uma biblioteca JavaScript para criar gráficos.
+
+É incluída no base.html:
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+
+CRIAÇÃO DE GRÁFICO
+------------------
+    new Chart(ctx, {
+        type: 'bar',
+        data: {...},
+        options: {...}
+    })
+
+
+PARÂMETROS PRINCIPAIS:
+
+1. type: Tipo do gráfico
+   ----------------------
+   - 'bar': Barras verticais
+   - 'pie': Pizza
+   - 'line': Linha
+   - 'doughnut': Rosca
+   - 'radar': Radar
+
+
+2. data: Dados do gráfico
+   ----------------------
+   {
+       labels: ['Item 1', 'Item 2', 'Item 3'],
+       datasets: [{
+           label: 'Série 1',
+           data: [10, 20, 30],
+           backgroundColor: ['red', 'green', 'blue']
+       }]
+   }
+
+   labels: Rótulos do eixo X (ou nomes das fatias)
+   datasets: Array de séries de dados
+   data: Valores numéricos
+   backgroundColor: Cores
+
+
+3. options: Configurações
+   -----------------------
+   {
+       responsive: true,          // Ajusta ao tamanho do container
+       maintainAspectRatio: true, // Mantém proporção
+       plugins: {
+           legend: {
+               display: true,     // Mostra legenda
+               position: 'bottom' // Posição: 'top', 'bottom', 'left', 'right'
+           },
+           tooltip: {
+               enabled: true      // Mostra tooltip ao passar mouse
+           }
+       },
+       scales: {
+           y: {
+               beginAtZero: true  // Eixo Y começa em zero
+           }
+       }
+   }
+
+
+GRÁFICO DE BARRAS AGRUPADAS
+----------------------------
+Para comparação entre escolas (3 barras por escola):
+
+    datasets: [
+        {
+            label: 'Aprovados',
+            data: [120, 135, 140],
+            backgroundColor: 'rgba(40, 167, 69, 0.7)'
+        },
+        {
+            label: 'Recuperação',
+            data: [25, 20, 18],
+            backgroundColor: 'rgba(255, 193, 7, 0.7)'
+        },
+        {
+            label: 'Reprovados',
+            data: [15, 10, 12],
+            backgroundColor: 'rgba(220, 53, 69, 0.7)'
+        }
+    ]
+
+Chart.js automaticamente agrupa as barras
+
+
+GRÁFICO DE PIZZA
+----------------
+Para status dos alunos:
+
+    type: 'pie',
+    data: {
+        labels: ['Aprovado', 'Recuperação', 'Reprovado'],
+        datasets: [{
+            data: [150, 30, 20],
+            backgroundColor: [
+                'rgba(40, 167, 69, 0.7)',
+                'rgba(255, 193, 7, 0.7)',
+                'rgba(220, 53, 69, 0.7)'
+            ]
+        }]
+    }
+
+
+INTERATIVIDADE AUTOMÁTICA
+--------------------------
+Chart.js adiciona automaticamente:
+- Hover: Destaca barra/fatia ao passar mouse
+- Tooltip: Mostra valor ao passar mouse
+- Animação: Anima entrada do gráfico
+- Click: Pode detectar cliques (se configurado)
+- Responsividade: Ajusta ao redimensionar janela
+
+
+DESTRUIÇÃO DE GRÁFICO
+----------------------
+Antes de criar novo gráfico, destruir o anterior:
+
+    if (currentChart) {
+        currentChart.destroy();
+    }
+
+Libera memória e limpa canvas
+
+
+================================================================================
+7. FLUXO COMPLETO DO SISTEMA
+================================================================================
+
+CENÁRIO: Usuário quer ver média por disciplina na Escola E001
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 1: Usuário Interage                                           │
+└─────────────────────────────────────────────────────────────────────┘
+
+Ação no Navegador:
+1. Seleciona "Escola E001" no dropdown de filial
+2. Seleciona "Média por Disciplina" no tipo de gráfico
+3. Clica em botão "Atualizar Gráfico"
+
+JavaScript detecta:
+    onclick="loadChartData()"  →  Chama função
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 2: JavaScript Coleta Dados                                    │
+└─────────────────────────────────────────────────────────────────────┘
+
+Função loadChartData():
+    const filters = {
+        id_filial: 'E001',           // Do dropdown
+        serie_turma: '',              // Vazio (todas)
+        nome_disciplina: '',          // Vazio (todas)
+        tipo_nota_aval: '',           // Vazio (todos)
+        status: '',                   // Vazio (todos)
+        chart_type: 'media_por_disciplina'  // Do radio button
+    };
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 3: Envia Requisição ao Servidor                               │
+└─────────────────────────────────────────────────────────────────────┘
+
+JavaScript:
+    fetch('/api/chart-data/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrftoken
+        },
+        body: JSON.stringify(filters)
+    })
+
+Dados enviados (JSON):
+    {
+        "id_filial": "E001",
+        "serie_turma": "",
+        "nome_disciplina": "",
+        "tipo_nota_aval": "",
+        "status": "",
+        "chart_type": "media_por_disciplina"
+    }
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 4: Django Recebe Requisição                                   │
+└─────────────────────────────────────────────────────────────────────┘
+
+views.py - get_chart_data():
+    data = json.loads(request.body)
+    # data = {'id_filial': 'E001', 'chart_type': 'media_por_disciplina', ...}
+    
+    filters = {k: v for k, v in data.items() if v and k != 'chart_type'}
+    # filters = {'id_filial': 'E001'}  (apenas não vazios)
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 5: Filtra Dados com Pandas                                    │
+└─────────────────────────────────────────────────────────────────────┘
+
+data_processor.py - filter_data():
+    df_filtered = self.df.copy()
+    df_filtered = df_filtered[df_filtered['id_filial'] == 'E001']
+    # DataFrame agora tem apenas registros da Escola E001
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 6: Agrega Dados                                               │
+└─────────────────────────────────────────────────────────────────────┘
+
+data_processor.py - aggregate_data():
+    result = df_filtered.groupby('nome_disciplina')['vlr_nota'].mean()
+    # result:
+    # Matemática    8.2
+    # Português     8.7
+    # História      8.5
+
+    return {
+        'labels': ['Matemática', 'Português', 'História'],
+        'data': [8.2, 8.7, 8.5],
+        'title': 'Média de Notas por Disciplina'
+    }
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 7: Calcula Estatísticas                                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+data_processor.py - get_statistics():
+    return {
+        'total_registros': 45000,
+        'total_alunos': 9000,
+        'media_geral': 8.3,
+        'nota_maxima': 10.0,
+        'nota_minima': 4.5,
+        'aprovados': 7200,
+        'recuperacao': 1200,
+        'reprovados': 600
+    }
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 8: Django Retorna JSON                                        │
+└─────────────────────────────────────────────────────────────────────┘
+
+views.py:
+    return JsonResponse({
+        'success': True,
+        'chart_data': {
+            'labels': ['Matemática', 'Português', 'História'],
+            'data': [8.2, 8.7, 8.5],
+            'title': 'Média de Notas por Disciplina'
+        },
+        'statistics': {
+            'total_registros': 45000,
+            'total_alunos': 9000,
+            ...
+        }
+    })
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 9: JavaScript Recebe Resposta                                 │
+└─────────────────────────────────────────────────────────────────────┘
+
+loadChartData():
+    const data = await response.json();
+    
+    if (data.success) {
+        currentChartData = data.chart_data;
+        currentStatistics = data.statistics;
+        
+        updateStatistics(data.statistics);
+        updateChart(data.chart_data);
+    }
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 10: Atualiza Estatísticas na Tela                             │
+└─────────────────────────────────────────────────────────────────────┘
+
+updateStatistics():
+    statsSection.innerHTML = `
+        <div class="stat-card">
+            <h3>Total de Alunos</h3>
+            <p>9.000</p>
+        </div>
+        <div class="stat-card">
+            <h3>Média Geral</h3>
+            <p>8.30</p>
+        </div>
+        ...
+    `;
+
+Usuário vê os cards coloridos com números atualizados
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ PASSO 11: Desenha Gráfico com Chart.js                              │
+└─────────────────────────────────────────────────────────────────────┘
+
+updateChart():
+    currentChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Matemática', 'Português', 'História'],
+            datasets: [{
+                data: [8.2, 8.7, 8.5],
+                backgroundColor: [
+                    'rgba(102, 126, 234, 0.7)',
+                    'rgba(118, 75, 162, 0.7)',
+                    'rgba(40, 167, 69, 0.7)'
+                ]
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: { beginAtZero: true }
+            }
+        }
+    });
+
+Chart.js:
+1. Lê os dados
+2. Calcula posições das barras
+3. Desenha no canvas
+4. Anima a entrada
+5. Adiciona interatividade
+
+Usuário vê: Gráfico de barras animado mostrando as médias!
+
+
+================================================================================
+RESUMO FINAL
+================================================================================
+
+ARQUITETURA EM 3 CAMADAS:
+
+1. DADOS (data_processor.py)
+   --------------------------
+   - Carrega CSV com Pandas
+   - Limpa e transforma dados
+   - Calcula status dos alunos
+   - Filtra baseado em critérios
+   - Agrega para gráficos
+   - Calcula estatísticas
+
+2. API (views.py)
+   --------------
+   - Recebe requisições HTTP
+   - Processa filtros
+   - Chama funções do data_processor
+   - Retorna JSON
+
+3. INTERFACE (dashboard.html + JavaScript + Chart.js)
+   ---------------------------------------------------
+   - Exibe filtros e botões
+   - Coleta seleções do usuário
+   - Envia requisições ao servidor
+   - Recebe JSON com dados
+   - Atualiza estatísticas na tela
+   - Desenha gráficos interativos
+
+
+FLUXO DE DADOS:
+
+    Usuário seleciona filtros
+            ↓
+    JavaScript coleta valores
+            ↓
+    POST /api/chart-data/ (JSON)
+            ↓
+    views.py recebe requisição
+            ↓
+    data_processor filtra DataFrame
+            ↓
+    data_processor agrega dados
+            ↓
+    views.py retorna JSON
+            ↓
+    JavaScript processa resposta
+            ↓
+    Atualiza estatísticas (HTML)
+            ↓
+    Chart.js desenha gráfico
+            ↓
+    Usuário vê resultado!
+
+
+PONTOS-CHAVE:
+
+✓ Backend e frontend são completamente separados
+✓ Comunicação via JSON (formato universal)
+✓ Pandas faz processamento pesado
+✓ Chart.js cuida da visualização
+✓ JavaScript conecta tudo
+
+Esta arquitetura permite:
+- Testar cada parte separadamente
+- Trocar tecnologias facilmente
+- Escalar para mais recursos
+- Manter código organizado
+
+================================================================================

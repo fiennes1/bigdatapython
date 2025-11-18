@@ -1,0 +1,561 @@
+{% extends 'analytics/base.html' %}
+
+{% block content %}
+<div class="filters-section">
+    <h2 class="filters-title">🔍 Filtros de Análise</h2>
+    
+    <div class="filters-grid">
+        <div class="filter-group">
+            <label for="id_filial">Escola (ID Filial)</label>
+            <select id="id_filial">
+                <option value="">Todas as Escolas</option>
+                {% for filial in filiais %}
+                <option value="{{ filial }}">Escola {{ filial }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="filter-group">
+            <label for="serie_turma">Série e Turma</label>
+            <select id="serie_turma">
+                <option value="">Todas as Séries/Turmas</option>
+                {% for st in series_turmas %}
+                <option value="{{ st }}">{{ st }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="filter-group">
+            <label for="nome_disciplina">Disciplina</label>
+            <select id="nome_disciplina">
+                <option value="">Todas as Disciplinas</option>
+                {% for disciplina in disciplinas %}
+                <option value="{{ disciplina }}">{{ disciplina }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="filter-group">
+            <label for="tipo_nota_aval">Tipo de Nota</label>
+            <select id="tipo_nota_aval">
+                <option value="">Todos os Tipos</option>
+                {% for tipo in tipos_nota %}
+                <option value="{{ tipo }}">{{ tipo }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="filter-group">
+            <label for="status">Status do Aluno</label>
+            <select id="status">
+                <option value="">Todos os Status</option>
+                {% for status in status_options %}
+                <option value="{{ status }}">{{ status }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+</div>
+
+<div class="chart-type-section">
+    <h2 class="filters-title">📈 Tipo de Gráfico</h2>
+    
+    <div class="chart-type-grid">
+        <div class="chart-type-option">
+            <input type="radio" id="chart_comparacao_filiais" name="chart_type" value="comparacao_filiais" checked>
+            <label for="chart_comparacao_filiais">Comparação entre Escolas</label>
+        </div>
+        
+        <div class="chart-type-option">
+            <input type="radio" id="chart_media_disciplina" name="chart_type" value="media_por_disciplina">
+            <label for="chart_media_disciplina">Média por Disciplina</label>
+        </div>
+        
+        <div class="chart-type-option">
+            <input type="radio" id="chart_status" name="chart_type" value="status_alunos">
+            <label for="chart_status">Status dos Alunos</label>
+        </div>
+        
+        <div class="chart-type-option">
+            <input type="radio" id="chart_tipo_nota" name="chart_type" value="notas_por_tipo">
+            <label for="chart_tipo_nota">Média por Tipo de Avaliação</label>
+        </div>
+        
+        <div class="chart-type-option">
+            <input type="radio" id="chart_alunos_faixa" name="chart_type" value="alunos_por_faixa">
+            <label for="chart_alunos_faixa">Alunos por Faixa de Desempenho</label>
+        </div>
+    </div>
+</div>
+
+<div class="buttons-section">
+    <button class="btn btn-primary" onclick="loadChartData()">🔄 Atualizar Gráfico</button>
+    <button class="btn btn-secondary" onclick="printReport()">🖨️ Imprimir Relatório</button>
+    <button class="btn btn-tertiary" onclick="clearFilters()">🗑️ Limpar Filtros</button>
+</div>
+
+<div id="statistics" class="statistics-section" style="display: none; margin-top: 40px;">
+    <!-- Estatísticas serão inseridas aqui via JavaScript -->
+</div>
+
+<div class="chart-section">
+    <h2 class="chart-title" id="chartTitle">Selecione os filtros e clique em "Atualizar Gráfico"</h2>
+    <canvas id="chartCanvas"></canvas>
+</div>
+
+<script>
+let currentChart = null;
+let currentChartData = null;
+let currentStatistics = null;
+let currentFilters = null;
+
+// Função para obter o CSRF token
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
+const csrftoken = getCookie('csrftoken');
+
+// Carregar dados do gráfico
+async function loadChartData() {
+    const filters = {
+        id_filial: document.getElementById('id_filial').value,
+        serie_turma: document.getElementById('serie_turma').value,
+        nome_disciplina: document.getElementById('nome_disciplina').value,
+        tipo_nota_aval: document.getElementById('tipo_nota_aval').value,
+        status: document.getElementById('status').value,
+        chart_type: document.querySelector('input[name="chart_type"]:checked').value
+    };
+    
+    // Armazenar filtros atuais
+    currentFilters = filters;
+    
+    // Mostrar loading
+    document.getElementById('chartTitle').textContent = 'Carregando dados...';
+    
+    try {
+        const response = await fetch('/api/chart-data/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrftoken
+            },
+            body: JSON.stringify(filters)
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Armazenar dados para impressão
+            currentChartData = data.chart_data;
+            currentStatistics = data.statistics;
+            
+            // Atualizar estatísticas
+            updateStatistics(data.statistics);
+            
+            // Atualizar gráfico
+            updateChart(data.chart_data);
+        } else {
+            alert('Erro ao carregar dados: ' + data.error);
+        }
+    } catch (error) {
+        console.error('Erro:', error);
+        alert('Erro ao conectar com o servidor');
+    }
+}
+
+// Atualizar estatísticas
+function updateStatistics(stats) {
+    const statsSection = document.getElementById('statistics');
+    statsSection.style.display = 'grid';
+    
+    statsSection.innerHTML = `
+        <div class="stat-card">
+            <h3>Total de Registros</h3>
+            <p>${stats.total_registros.toLocaleString('pt-BR')}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Total de Alunos</h3>
+            <p>${stats.total_alunos.toLocaleString('pt-BR')}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Média Geral</h3>
+            <p>${stats.media_geral.toFixed(2)}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Nota Máxima</h3>
+            <p>${stats.nota_maxima.toFixed(2)}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Nota Mínima</h3>
+            <p>${stats.nota_minima.toFixed(2)}</p>
+        </div>
+        <div class="stat-card" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
+            <h3>Aprovados</h3>
+            <p>${stats.aprovados.toLocaleString('pt-BR')}</p>
+        </div>
+        <div class="stat-card" style="background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);">
+            <h3>Recuperação</h3>
+            <p>${stats.recuperacao.toLocaleString('pt-BR')}</p>
+        </div>
+        <div class="stat-card" style="background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);">
+            <h3>Reprovados</h3>
+            <p>${stats.reprovados.toLocaleString('pt-BR')}</p>
+        </div>
+    `;
+}
+
+// Atualizar gráfico
+function updateChart(chartData) {
+    const ctx = document.getElementById('chartCanvas').getContext('2d');
+    
+    // Destruir gráfico anterior se existir
+    if (currentChart) {
+        currentChart.destroy();
+    }
+    
+    // Atualizar título
+    document.getElementById('chartTitle').textContent = chartData.title;
+    
+    // Determinar tipo de gráfico
+    const chartType = document.querySelector('input[name="chart_type"]:checked').value;
+    let chartTypeDisplay = 'bar';
+    
+    if (chartType === 'status_alunos' || chartType === 'alunos_por_faixa') {
+        chartTypeDisplay = 'pie';
+    }
+    
+    // Preparar datasets
+    let datasets;
+    if (chartData.type === 'grouped' && chartData.datasets) {
+        // Gráfico agrupado (múltiplos datasets)
+        datasets = chartData.datasets.map(ds => ({
+            label: ds.label,
+            data: ds.data,
+            backgroundColor: ds.color,
+            borderColor: ds.color.replace('0.7', '1'),
+            borderWidth: 2
+        }));
+    } else {
+        // Gráfico simples (um dataset)
+        datasets = [{
+            label: chartData.title,
+            data: chartData.data,
+            backgroundColor: [
+                'rgba(102, 126, 234, 0.7)',
+                'rgba(118, 75, 162, 0.7)',
+                'rgba(40, 167, 69, 0.7)',
+                'rgba(255, 193, 7, 0.7)',
+                'rgba(220, 53, 69, 0.7)',
+                'rgba(23, 162, 184, 0.7)',
+                'rgba(108, 117, 125, 0.7)',
+                'rgba(255, 152, 0, 0.7)'
+            ],
+            borderColor: [
+                'rgba(102, 126, 234, 1)',
+                'rgba(118, 75, 162, 1)',
+                'rgba(40, 167, 69, 1)',
+                'rgba(255, 193, 7, 1)',
+                'rgba(220, 53, 69, 1)',
+                'rgba(23, 162, 184, 1)',
+                'rgba(108, 117, 125, 1)',
+                'rgba(255, 152, 0, 1)'
+            ],
+            borderWidth: 2
+        }];
+    }
+    
+    // Criar novo gráfico
+    currentChart = new Chart(ctx, {
+        type: chartTypeDisplay,
+        data: {
+            labels: chartData.labels,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                legend: {
+                    display: chartTypeDisplay === 'pie' || (chartData.type === 'grouped'),
+                    position: 'bottom'
+                },
+                tooltip: {
+                    enabled: true,
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    padding: 12,
+                    titleFont: { size: 14 },
+                    bodyFont: { size: 13 }
+                }
+            },
+            scales: chartTypeDisplay === 'bar' ? {
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        font: { size: 12 }
+                    }
+                },
+                x: {
+                    ticks: {
+                        font: { size: 12 }
+                    }
+                }
+            } : {}
+        }
+    });
+}
+
+// Imprimir relatório
+function printReport() {
+    if (!currentChartData || !currentStatistics) {
+        alert('Por favor, gere um gráfico primeiro antes de imprimir!');
+        return;
+    }
+    
+    // Criar conteúdo do relatório
+    let reportContent = `
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+            <meta charset="UTF-8">
+            <title>Relatório de Análise de Notas</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    padding: 40px;
+                    max-width: 900px;
+                    margin: 0 auto;
+                }
+                h1 {
+                    color: #667eea;
+                    border-bottom: 3px solid #667eea;
+                    padding-bottom: 10px;
+                }
+                h2 {
+                    color: #764ba2;
+                    margin-top: 30px;
+                    border-bottom: 2px solid #e0e0e0;
+                    padding-bottom: 8px;
+                }
+                .info-section {
+                    background: #f8f9fa;
+                    padding: 15px;
+                    border-radius: 8px;
+                    margin: 20px 0;
+                }
+                .info-item {
+                    margin: 8px 0;
+                    font-size: 14px;
+                }
+                .info-label {
+                    font-weight: bold;
+                    color: #555;
+                }
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin: 20px 0;
+                }
+                th {
+                    background: #667eea;
+                    color: white;
+                    padding: 12px;
+                    text-align: left;
+                    font-weight: 600;
+                }
+                td {
+                    padding: 10px 12px;
+                    border-bottom: 1px solid #e0e0e0;
+                }
+                tr:hover {
+                    background: #f8f9fa;
+                }
+                .stats-grid {
+                    display: grid;
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 15px;
+                    margin: 20px 0;
+                }
+                .stat-card {
+                    background: #667eea;
+                    color: white;
+                    padding: 15px;
+                    border-radius: 8px;
+                    text-align: center;
+                }
+                .stat-card.green { background: #28a745; }
+                .stat-card.yellow { background: #ffc107; color: #333; }
+                .stat-card.red { background: #dc3545; }
+                .stat-label {
+                    font-size: 12px;
+                    text-transform: uppercase;
+                    opacity: 0.9;
+                    margin-bottom: 5px;
+                }
+                .stat-value {
+                    font-size: 24px;
+                    font-weight: bold;
+                }
+                .footer {
+                    margin-top: 40px;
+                    padding-top: 20px;
+                    border-top: 2px solid #e0e0e0;
+                    text-align: center;
+                    color: #999;
+                    font-size: 12px;
+                }
+                @media print {
+                    body { padding: 20px; }
+                }
+            </style>
+        </head>
+        <body>
+            <h1>📊 Relatório de Análise de Notas</h1>
+            <p style="color: #666;">Sistema Big Data Analytics - Notas Escolares</p>
+            
+            <div class="info-section">
+                <h2>Filtros Aplicados</h2>
+                <div class="info-item"><span class="info-label">Escola:</span> ${currentFilters.id_filial || 'Todas'}</div>
+                <div class="info-item"><span class="info-label">Série/Turma:</span> ${currentFilters.serie_turma || 'Todas'}</div>
+                <div class="info-item"><span class="info-label">Disciplina:</span> ${currentFilters.nome_disciplina || 'Todas'}</div>
+                <div class="info-item"><span class="info-label">Tipo de Nota:</span> ${currentFilters.tipo_nota_aval || 'Todos'}</div>
+                <div class="info-item"><span class="info-label">Status:</span> ${currentFilters.status || 'Todos'}</div>
+                <div class="info-item"><span class="info-label">Data:</span> ${new Date().toLocaleString('pt-BR')}</div>
+            </div>
+            
+            <h2>Estatísticas Gerais</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total de Registros</div>
+                    <div class="stat-value">${currentStatistics.total_registros.toLocaleString('pt-BR')}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total de Alunos</div>
+                    <div class="stat-value">${currentStatistics.total_alunos.toLocaleString('pt-BR')}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Média Geral</div>
+                    <div class="stat-value">${currentStatistics.media_geral.toFixed(2)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Nota Máxima</div>
+                    <div class="stat-value">${currentStatistics.nota_maxima.toFixed(2)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Nota Mínima</div>
+                    <div class="stat-value">${currentStatistics.nota_minima.toFixed(2)}</div>
+                </div>
+                <div class="stat-card green">
+                    <div class="stat-label">Aprovados</div>
+                    <div class="stat-value">${currentStatistics.aprovados.toLocaleString('pt-BR')}</div>
+                </div>
+                <div class="stat-card yellow">
+                    <div class="stat-label">Recuperação</div>
+                    <div class="stat-value">${currentStatistics.recuperacao.toLocaleString('pt-BR')}</div>
+                </div>
+                <div class="stat-card red">
+                    <div class="stat-label">Reprovados</div>
+                    <div class="stat-value">${currentStatistics.reprovados.toLocaleString('pt-BR')}</div>
+                </div>
+            </div>
+            
+            <h2>${currentChartData.title}</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+    `;
+    
+    // Se for gráfico agrupado, adicionar colunas para cada dataset
+    if (currentChartData.type === 'grouped' && currentChartData.datasets) {
+        for (let ds of currentChartData.datasets) {
+            reportContent += `<th style="text-align: right;">${ds.label}</th>`;
+        }
+    } else {
+        reportContent += `<th style="text-align: right;">Valor</th>`;
+    }
+    
+    reportContent += `
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+    
+    // Adicionar dados do gráfico na tabela
+    for (let i = 0; i < currentChartData.labels.length; i++) {
+        reportContent += `<tr><td>${currentChartData.labels[i]}</td>`;
+        
+        if (currentChartData.type === 'grouped' && currentChartData.datasets) {
+            // Gráfico agrupado: mostrar dados de cada dataset
+            for (let ds of currentChartData.datasets) {
+                reportContent += `<td style="text-align: right; font-weight: 600;">${ds.data[i].toLocaleString('pt-BR')}</td>`;
+            }
+        } else {
+            // Gráfico simples: mostrar apenas um valor
+            reportContent += `<td style="text-align: right; font-weight: 600;">${currentChartData.data[i].toLocaleString('pt-BR')}</td>`;
+        }
+        
+        reportContent += `</tr>`;
+    }
+    
+    reportContent += `
+                </tbody>
+            </table>
+            
+            <div class="footer">
+                <p>Big Data Analytics - Sistema de Análise de Notas Escolares</p>
+                <p>Relatório gerado em ${new Date().toLocaleString('pt-BR')}</p>
+            </div>
+        </body>
+        </html>
+    `;
+    
+    // Abrir nova janela e imprimir
+    const printWindow = window.open('', '', 'width=900,height=700');
+    printWindow.document.write(reportContent);
+    printWindow.document.close();
+    printWindow.focus();
+    
+    // Aguardar carregamento e imprimir
+    setTimeout(() => {
+        printWindow.print();
+    }, 250);
+}
+
+// Limpar filtros
+function clearFilters() {
+    document.getElementById('id_filial').value = '';
+    document.getElementById('serie_turma').value = '';
+    document.getElementById('nome_disciplina').value = '';
+    document.getElementById('tipo_nota_aval').value = '';
+    document.getElementById('status').value = '';
+    document.querySelector('input[value="comparacao_filiais"]').checked = true;
+    
+    // Limpar estatísticas e gráfico
+    document.getElementById('statistics').style.display = 'none';
+    document.getElementById('chartTitle').textContent = 'Selecione os filtros e clique em "Atualizar Gráfico"';
+    
+    if (currentChart) {
+        currentChart.destroy();
+        currentChart = null;
+    }
+}
+
+// Carregar dados iniciais ao carregar a página
+window.addEventListener('load', function() {
+    loadChartData();
+});
+</script>
+{% endblock %}
+
